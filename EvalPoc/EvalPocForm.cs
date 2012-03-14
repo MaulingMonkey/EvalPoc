@@ -14,9 +14,9 @@ namespace EvalPoc
 {
 	public partial class EvalPocForm : Form
 	{
-		static readonly string AppDataDir = Path.Combine( Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EvalPoc" );
-		static readonly string ScriptPath = Path.Combine( AppDataDir, "LastScript.cs" );
-
+		static readonly string AppDataDir			= Path.Combine( Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EvalPoc" );
+		static readonly string ScriptPath			= Path.Combine( AppDataDir, "LastScript.cs" );
+		static readonly string SerializationPath	= Path.Combine( AppDataDir, "LastState.bin" );
 		public EvalPocForm()
 		{
 			InitializeComponent();
@@ -65,43 +65,64 @@ namespace EvalPoc
 
 		void ShowResultsAndRecheck( DateTime compileStart, CompilerResults results )
 		{
-			lvErrors.Items.Clear();
-
-			bool errors = false;
-			foreach ( CompilerError error in results.Errors )
+			try
 			{
-				var columns = new[]
-					{ error.IsWarning ? "Warning" : "Error"
-					, error.ErrorText
-					};
+				lvErrors.Items.Clear();
 
-				if ( !error.IsWarning ) errors = true;
+				bool errors = false;
+				foreach ( CompilerError error in results.Errors )
+				{
+					var columns = new[]
+						{ error.IsWarning ? "Compiler Warning" : "Compiler Error"
+						, error.ErrorText
+						};
 
-				lvErrors.Items.Add( new ListViewItem(columns) );
+					if ( !error.IsWarning ) errors = true;
+
+					lvErrors.Items.Add( new ListViewItem(columns) );
+				}
+
+				if (!errors)
+				{
+					Type[] scripts = results.CompiledAssembly.GetTypes().Where(t=>t.GetInterfaces().Contains(typeof(IScript))).ToArray();
+
+					switch ( scripts.Length )
+					{
+					case 0:
+						lvErrors.Items.Add( new ListViewItem(new[]{"Reflection Error","Couldn't find any IScript implementing classes"}) );
+						return;
+					case 1:
+						break; // OK
+					default:
+						lvErrors.Items.Add( new ListViewItem(new[]{"Reflection Error","Found multiple IScript implementing classes:"}) );
+						foreach ( var script in scripts ) lvErrors.Items.Add(new ListViewItem(new[]{"",script.FullName}));
+						return;
+					}
+
+					var scriptType = scripts[0];
+
+					IScript next = null;
+					var newT = new Thread(()=>{
+						next = results.CompiledAssembly.CreateInstance(scriptType.FullName) as IScript;
+					});
+
+					newT.Start();
+					if (!newT.Join(10000))
+					{
+						lvErrors.Items.Add( new ListViewItem(new[]{"Timeout", "Took more than 10 seconds to create new Script, aborting"}) );
+						newT.Abort();
+					}
+					else
+					{
+						LastCompiledScript = next;
+					}
+				}
 			}
-
-			if (!errors)
+			finally
 			{
-				IScript next = null;
-				var newT = new Thread(()=>{
-					next = results.CompiledAssembly.CreateInstance("Script") as IScript;
-				});
-
-				newT.Start();
-				if (!newT.Join(10000))
-				{
-					lvErrors.Items.Add( new ListViewItem(new[]{"Timeout", "Took more than 10 seconds to create new Script, aborting"}) );
-					newT.Abort();
-				}
-				else
-				{
-					LastCompiledScript = next;
-				}
+				var end = DateTime.Now;
+				Text = (end-compileStart).TotalMilliseconds.ToString("F0") + " ms from compile to new script object or build errors";
 			}
-
-			var end = DateTime.Now;
-
-			Text = (end-compileStart).TotalMilliseconds.ToString("F0") + " ms from compile to new script object or build errors";
 		}
 
 		void AddRecursively( StringCollection paths, Assembly assembly )
@@ -119,14 +140,7 @@ namespace EvalPoc
 		void Recompile( object code_ )
 		{
 			var start = DateTime.Now;
-			var code
-				=  "public class Script : EvalPoc.IScript {\n"
-				+  "	public void Run( System.Windows.Forms.PaintEventArgs args ) {\n"
-				+  "		var fx = args.Graphics;\n"
-				+  (string)code_
-				+  "	}\n"
-				+  "}\n"
-				;
+			var code = (string)code_;
 
 			var param = new CompilerParameters()
 			{

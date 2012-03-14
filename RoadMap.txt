@@ -11,6 +11,6 @@ class AntFarm : IAntFarm
 We don't even need ants.  This is basically EvalPoc with serialization of IScript.
 
 1) Save the antfarm so it's persisted between recompiles.
-2) Save the script so I can shut it off and turn it back on again.
+2) Save the script so I can shut it off and turn it back on again. DONE
 3) Might as well throw both in AppData.
 4) VS integration would just be a matter of snaking off a class library project and using a filesystem listener
