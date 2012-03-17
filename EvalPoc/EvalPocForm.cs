@@ -162,24 +162,12 @@ namespace EvalPoc
 							{
 								LastSerializedScript.Position = 0;
 
-								ResolveEventHandler reh = (e,args) => {
-									return results.CompiledAssembly;
-								};
-
-								try
-								{
-									AppDomain.CurrentDomain.AssemblyResolve += reh;
-
-									var bf = new BinaryFormatter()
-										{ AssemblyFormat = FormatterAssemblyStyle.Simple // unnecessary?
-										, Context = new StreamingContext( StreamingContextStates.File ) // unnecessary.
-										};
-									next = bf.Deserialize(LastSerializedScript) as IScript;
-								}
-								finally
-								{
-									AppDomain.CurrentDomain.AssemblyResolve -= reh;
-								}
+								var bf = new BinaryFormatter()
+									{ AssemblyFormat = FormatterAssemblyStyle.Simple // unnecessary?
+									, Context = new StreamingContext( StreamingContextStates.File ) // unnecessary.
+									, Binder = new SpecifiedAssemblyDeserializationBinder(results.CompiledAssembly)
+									};
+								next = bf.Deserialize(LastSerializedScript) as IScript;
 							}
 						}
 						catch ( Exception e )
@@ -209,7 +197,11 @@ namespace EvalPoc
 			finally
 			{
 				var end = DateTime.Now;
-				Text = "AntFarm -- " + (end-compileStart).TotalMilliseconds.ToString("F0") + " ms from compile to new script object or build errors";
+				var assembly = (results!=null && !results.Errors.HasErrors && results.CompiledAssembly!=null ) ? results.CompiledAssembly.GetName().Name : "N/A";
+				Text = "AntFarm -- " + assembly + " -- " + (end-compileStart).TotalMilliseconds.ToString("F0") + " ms from compile to new script object or build errors";
+
+				// evil hack to jump the new script object ahead by however long it took us to compile bringing us roughly in sync?
+				PreviousFrameUtc -= (end-compileStart);
 			}
 		}
 
