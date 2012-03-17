@@ -6,6 +6,9 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Formatters;
+using System.Runtime.Serialization.Formatters.Binary;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.CSharp;
@@ -17,6 +20,7 @@ namespace EvalPoc
 		static readonly string AppDataDir			= Path.Combine( Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EvalPoc" );
 		static readonly string ScriptPath			= Path.Combine( AppDataDir, "LastScript.cs" );
 		static readonly string SerializationPath	= Path.Combine( AppDataDir, "LastState.bin" );
+
 		public EvalPocForm()
 		{
 			InitializeComponent();
@@ -29,6 +33,19 @@ namespace EvalPoc
 
 			Assemblies = new StringCollection();
 			AddRecursively( Assemblies, Assembly.GetExecutingAssembly() );
+			CSCP = new CSharpCodeProvider(providerOptions);
+
+			try
+			{
+				LastSerializedScript = new MemoryStream( File.ReadAllBytes(SerializationPath) );
+			}
+			catch ( DirectoryNotFoundException )
+			{
+				Directory.CreateDirectory(AppDataDir);
+			}
+			catch ( FileNotFoundException )
+			{
+			}
 
 			try
 			{
@@ -41,8 +58,13 @@ namespace EvalPoc
 			catch ( FileNotFoundException )
 			{
 			}
+		}
 
-			CSCP = new CSharpCodeProvider(providerOptions);
+		protected override void OnClosing( System.ComponentModel.CancelEventArgs e )
+		{
+			TrySerialize();
+			if ( LastSerializedScript != null ) File.WriteAllBytes( SerializationPath, LastSerializedScript.ToArray() );
+			base.OnClosing(e);
 		}
 
 		void Application_Idle( object sender, EventArgs e ) {
@@ -52,14 +74,40 @@ namespace EvalPoc
 		StringCollection Assemblies = null;
 		CSharpCodeProvider CSCP = null;
 		IScript LastCompiledScript = null;
+		MemoryStream LastSerializedScript = null;
+
 		bool CodeModified = false;
 		bool CodeExceptions = false;
+
 		void CheckCodeModified()
 		{
 			if ( CodeModified )
 			{
+				TrySerialize();
 				CodeModified = false;
 				ThreadPool.QueueUserWorkItem( Recompile, tbCode.Text );
+			}
+		}
+
+		void TrySerialize()
+		{
+			if ( LastCompiledScript == null ) return;
+
+			try
+			{
+				var ms = new MemoryStream();
+				var bf = new BinaryFormatter()
+					{
+					};
+				bf.Serialize( ms, LastCompiledScript );
+				ms.Position = 0;
+				LastSerializedScript = ms;
+			}
+			catch ( Exception ex )
+			{
+				lvErrors.Items.Add( new ListViewItem(new[]{"Serialization Exception","Couldn't serialize script"}));
+				lvErrors.Items.Add( new ListViewItem(new[]{"Exception Type", ex.GetType().FullName}) );
+				lvErrors.Items.Add( new ListViewItem(new[]{"Exception Message", ex.Message}) );
 			}
 		}
 
@@ -102,8 +150,42 @@ namespace EvalPoc
 					var scriptType = scripts[0];
 
 					IScript next = null;
+					Exception ex = null;
 					var newT = new Thread(()=>{
-						next = results.CompiledAssembly.CreateInstance(scriptType.FullName) as IScript;
+						try
+						{
+							if ( LastSerializedScript == null )
+							{
+								next = results.CompiledAssembly.CreateInstance(scriptType.FullName) as IScript;
+							}
+							else
+							{
+								LastSerializedScript.Position = 0;
+
+								ResolveEventHandler reh = (e,args) => {
+									return results.CompiledAssembly;
+								};
+
+								try
+								{
+									AppDomain.CurrentDomain.AssemblyResolve += reh;
+
+									var bf = new BinaryFormatter()
+										{ AssemblyFormat = FormatterAssemblyStyle.Simple // unnecessary?
+										, Context = new StreamingContext( StreamingContextStates.File ) // unnecessary.
+										};
+									next = bf.Deserialize(LastSerializedScript) as IScript;
+								}
+								finally
+								{
+									AppDomain.CurrentDomain.AssemblyResolve -= reh;
+								}
+							}
+						}
+						catch ( Exception e )
+						{
+							ex = e;
+						}
 					});
 
 					newT.Start();
@@ -111,6 +193,12 @@ namespace EvalPoc
 					{
 						lvErrors.Items.Add( new ListViewItem(new[]{"Timeout", "Took more than 10 seconds to create new Script, aborting"}) );
 						newT.Abort();
+					}
+					else if ( ex != null )
+					{
+						lvErrors.Items.Add( new ListViewItem(new[]{"Exception", "Exception creating script"}) );
+						lvErrors.Items.Add( new ListViewItem(new[]{"Exception Type", ex.GetType().FullName}) );
+						lvErrors.Items.Add( new ListViewItem(new[]{"Exception Message", ex.Message}) );
 					}
 					else
 					{
@@ -121,7 +209,7 @@ namespace EvalPoc
 			finally
 			{
 				var end = DateTime.Now;
-				Text = (end-compileStart).TotalMilliseconds.ToString("F0") + " ms from compile to new script object or build errors";
+				Text = "AntFarm -- " + (end-compileStart).TotalMilliseconds.ToString("F0") + " ms from compile to new script object or build errors";
 			}
 		}
 
@@ -166,20 +254,36 @@ namespace EvalPoc
 			File.WriteAllText(ScriptPath,tbCode.Text);
 		}
 
-		private void pbRenderTarget_Paint( object sender, PaintEventArgs args ) {
+		float T = 0.0f;
+		DateTime PreviousFrameUtc = DateTime.UtcNow;
+		private void pbRenderTarget_Paint( object sender, PaintEventArgs args )
+		{
+			var nowUtc = DateTime.UtcNow;
+			var dt = (float)(nowUtc-PreviousFrameUtc).TotalSeconds;
+			PreviousFrameUtc = nowUtc;
+
+			if ( dt<0 ) dt=0;
+			if ( dt>1 ) dt=1;
+
+			T += dt;
+
+
+
 			if ( LastCompiledScript != null ) try
 			{
-				using ( var bitmap = new Bitmap(ClientSize.Width,ClientSize.Height) )
+				var w = pbRenderTarget.ClientSize.Width;
+				var h = pbRenderTarget.ClientSize.Height;
+				using ( var bitmap = new Bitmap(w,h) )
 				{
 					using ( var fx = Graphics.FromImage(bitmap) )
 					{
 						var script = LastCompiledScript;
-						var args2 = new PaintEventArgs(fx,ClientRectangle);
+						var args2 = new ScriptRunArgs(fx,new Rectangle(0,0,w,h),T,dt);
 						Exception ex = null;
 						var render = new Thread(()=>{
 							try
 							{
-								script.Run(args);
+								script.Run(args2);
 							}
 							catch ( Exception tex )
 							{
@@ -199,7 +303,7 @@ namespace EvalPoc
 							throw ex;
 						}
 					}
-					args.Graphics.DrawImage( bitmap, ClientRectangle );
+					args.Graphics.DrawImage( bitmap, new Rectangle(0,0,w,h) );
 				}
 			}
 			catch ( Exception e )
@@ -207,10 +311,21 @@ namespace EvalPoc
 				if (!CodeExceptions)
 				{
 					CodeExceptions = true;
-					lvErrors.Items.Add( new ListViewItem(new[]{"Exception Type", e.GetType().Name}) );
-					lvErrors.Items.Add( new ListViewItem(new[]{"Exception", e.Message}) );
+					lvErrors.Items.Add( new ListViewItem(new[]{"Exception", "Exception running script"}) );
+					lvErrors.Items.Add( new ListViewItem(new[]{"Exception Type", e.GetType().FullName}) );
+					lvErrors.Items.Add( new ListViewItem(new[]{"Exception Message", e.Message}) );
 				}
 			}
+		}
+
+		private void bNukeState_Click( object sender, EventArgs e ) {
+			LastSerializedScript = null;
+			ThreadPool.QueueUserWorkItem( Recompile, tbCode.Text );
+		}
+
+		private void EvalPocForm_Load( object sender, EventArgs e )
+		{
+			tbCode.Select(0,0);
 		}
 	}
 }

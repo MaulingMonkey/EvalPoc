@@ -3,9 +3,22 @@ using System.Windows.Forms;
 
 namespace EvalPoc
 {
+	public class ScriptRunArgs : PaintEventArgs
+	{
+		public readonly float T;
+		public readonly float DT;
+
+		public ScriptRunArgs( Graphics fx, Rectangle area, float t, float dt )
+			: base( fx, area )
+		{
+			T = t;
+			DT = dt;
+		}
+	}
+
 	public interface IScript
 	{
-		void Run( PaintEventArgs args );
+		void Run( ScriptRunArgs args );
 	}
 
 	class ErrorScript : IScript
@@ -19,7 +32,7 @@ namespace EvalPoc
 			Message = message;
 		}
 
-		public void Run( PaintEventArgs args )
+		public void Run( ScriptRunArgs args )
 		{
 			var fx = args.Graphics;
 			fx.Clear( SystemColors.Control );
